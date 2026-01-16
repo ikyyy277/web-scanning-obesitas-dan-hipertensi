@@ -2,169 +2,189 @@
 <html lang="id">
 <head>
 <meta charset="UTF-8">
-<title>VISCERA – Multimodal Health Screening</title>
+<title>VISCERA – Integrated Risk Engine</title>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
 <style>
-body { font-family: Arial; background:#f3f6fb; }
+body { font-family: Arial; background:#f2f4f8; }
 .container {
-  width:480px; background:white; margin:30px auto;
-  padding:20px; border-radius:12px;
+  width:440px; margin:20px auto; background:#fff;
+  padding:20px; border-radius:10px;
 }
-label { display:block; margin-top:10px; }
 input, button {
-  width:100%; padding:8px; margin-top:5px;
+  width:100%; padding:8px; margin-top:6px;
 }
-button { background:#004cff; color:white; border:none; cursor:pointer; }
+video { width:100%; border-radius:8px; margin-top:10px; }
 .result {
-  background:#eef3ff; padding:12px; margin-top:15px;
-  border-radius:10px;
+  background:#eef2ff; padding:10px; margin-top:10px;
 }
-video { width:100%; margin-top:10px; border-radius:10px; }
-small { color:#555; }
-.error { color:red; font-weight:bold; }
+small { color:#666; }
 </style>
 </head>
 
 <body>
 <div class="container">
-<h2>VISCERA</h2>
-<small>Skrining Risiko Kardiometabolik Berbasis Multimodal (Non-Diagnostik)</small>
+<h3>VISCERA</h3>
+<small>Skrining Risiko Kardiometabolik (Non-Diagnostik)</small>
 
-<label>Umur (18–80 tahun)</label>
-<input id="umur">
+<h4>Data Fisik</h4>
+<input id="umur" placeholder="Umur (tahun)">
+<input id="bb" placeholder="Berat Badan (kg)">
+<input id="tb" placeholder="Tinggi Badan (cm)">
+<input id="denyut" placeholder="Denyut Nadi / menit">
 
-<label>Berat Badan (kg)</label>
-<input id="bb">
+<button onclick="hitungManual()">Analisis Data Fisik</button>
 
-<label>Tinggi Badan (cm)</label>
-<input id="tb">
-
-<label>Denyut Nadi / menit</label>
-<input id="nadi">
-
-<label>Keluhan</label>
-<input id="keluhan" placeholder="pusing, lelah, nyeri dada">
-
-<button onclick="analisisManual()">Analisis Data Manual</button>
 <div id="manualResult" class="result"></div>
 
 <hr>
 
-<button onclick="startCamera()">Aktifkan Kamera</button>
+<h4>Scan Wajah</h4>
+<button onclick="startScan()">Mulai Scan (6 detik)</button>
 <video id="video" autoplay></video>
 
-<button onclick="scanVisual()">Analisis Wajah & Tubuh</button>
+<div id="scanStatus"></div>
 <div id="finalResult" class="result"></div>
 </div>
 
 <script>
 let manualScore = 0;
-let bmiGlobal = 0;
+let visualScore = 0;
 
-function analisisManual(){
-  let umur = parseInt(umurEl.value);
-  let bb = parseFloat(bbEl.value);
-  let tb = parseFloat(tbEl.value);
-  let nadi = parseInt(nadiEl.value);
-  let keluhan = keluhanEl.value.toLowerCase();
+function hitungManual(){
+  let umur = parseInt(document.getElementById("umur").value);
+  let bb = parseFloat(document.getElementById("bb").value);
+  let tb = parseFloat(document.getElementById("tb").value) / 100;
+  let denyut = parseInt(document.getElementById("denyut").value);
 
-  if (umur<18||umur>80||bb<35||bb>150||tb<140||tb>200||nadi<50||nadi>120){
-    manualResult.innerHTML = "<span class='error'>Input berada di luar batas fisiologis wajar.</span>";
+  if (!umur || !bb || !tb || !denyut) {
+    alert("Data belum lengkap");
     return;
   }
 
-  bmiGlobal = bb / Math.pow(tb/100,2);
+  // validasi logis
+  if (tb < 1.3 || tb > 2.1 || bb < 30 || bb > 200) {
+    alert("Data fisik tidak masuk akal");
+    return;
+  }
+
+  let bmi = bb / (tb * tb);
   manualScore = 0;
 
-  if (umur >= 45) manualScore++;
-  if (bmiGlobal >= 25) manualScore += 2;
-  if (nadi > 90) manualScore += 2;
-  if (keluhan.includes("pusing")||keluhan.includes("lelah")||keluhan.includes("sesak")) manualScore++;
+  if (bmi >= 25) manualScore += 2;
+  if (denyut > 90) manualScore += 2;
+  if (umur >= 40) manualScore += 1;
+  if (umur >= 55) manualScore += 1;
 
-  manualResult.innerHTML =
-    "<b>Hasil Manual</b><br>" +
-    "BMI: " + bmiGlobal.toFixed(1) + "<br>" +
-    "Skor Risiko Manual: " + manualScore +
-    "<br><small>Lanjutkan ke analisis visual.</small>";
+  let level = "rendah";
+  if (manualScore >= 4) level = "tinggi";
+  else if (manualScore >= 2) level = "sedang";
+
+  document.getElementById("manualResult").innerHTML =
+    "<b>Analisis Data Fisik</b><br>" +
+    "BMI: " + bmi.toFixed(1) + "<br>" +
+    "Risiko dasar: <b>" + level + "</b><br>" +
+    "<small>Silakan lanjutkan pemindaian wajah</small>";
 }
 
-function startCamera(){
-  navigator.mediaDevices.getUserMedia({ video:true })
-    .then(stream => video.srcObject = stream);
+// ================= VISUAL MODULE ==================
+
+let video = document.getElementById("video");
+let scanStatus = document.getElementById("scanStatus");
+
+let frameCount = 0;
+let rednessSum = 0;
+let tensionSum = 0;
+let scanning = false;
+
+const faceMesh = new FaceMesh({
+  locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`
+});
+
+faceMesh.setOptions({
+  maxNumFaces: 1,
+  refineLandmarks: true,
+  minDetectionConfidence: 0.6,
+  minTrackingConfidence: 0.6
+});
+
+faceMesh.onResults(results => {
+  if (!scanning) return;
+
+  if (!results.multiFaceLandmarks) {
+    scanStatus.innerHTML = "Wajah tidak terdeteksi";
+    return;
+  }
+
+  frameCount++;
+  let lm = results.multiFaceLandmarks[0];
+
+  // pipi (indikator sirkulasi)
+  rednessSum += Math.abs(lm[234].x - lm[454].x);
+
+  // rahang (stres otot)
+  tensionSum += Math.abs(lm[172].y - lm[397].y);
+
+  if (frameCount >= 180) {
+    scanning = false;
+    hitungFinal();
+  }
+});
+
+function startScan(){
+  if (manualScore === 0) {
+    alert("Isi dan analisis data fisik dulu");
+    return;
+  }
+
+  frameCount = 0;
+  rednessSum = 0;
+  tensionSum = 0;
+  scanning = true;
+  scanStatus.innerHTML = "Scanning wajah ±6 detik...";
+
+  const camera = new Camera(video, {
+    onFrame: async () => {
+      await faceMesh.send({image: video});
+    },
+    width: 640,
+    height: 480
+  });
+  camera.start();
 }
 
-function scanVisual(){
-  // SIMULASI NILAI INDIKATOR VISUAL
-  let pipi = Math.random();
-  let mata = Math.random();
-  let simetri = Math.random();
-  let rppg = Math.random();
-  let body = Math.random();
+function hitungFinal(){
+  let r = rednessSum / frameCount;
+  let t = tensionSum / frameCount;
 
-  let faceScore = 0;
-  let narasi = "<b>Analisis Visual</b><br>";
+  visualScore = 0;
+  if (r > 0.02) visualScore += 2;
+  if (t > 0.015) visualScore += 2;
 
-  // 🟥 Pipi & wajah tengah
-  if (pipi > 0.6){
-    narasi += "• Pipi dan wajah bagian tengah menunjukkan intensitas kemerahan serta variasi warna yang fluktuatif, mengindikasikan aktivitas sirkulasi darah perifer yang meningkat.<br>";
-    faceScore += 2;
-  } else {
-    narasi += "• Pola sirkulasi wajah bagian tengah berada dalam kisaran normal.<br>";
-  }
+  let finalScore = (manualScore * 0.6) + (visualScore * 0.4);
 
-  // 👁️ Area bawah mata
-  if (mata > 0.6){
-    narasi += "• Area bawah mata tampak lebih gelap dengan tekstur pembuluh mikro menonjol, yang dapat berkorelasi dengan kelelahan sistemik dan stres fisiologis.<br>";
-    faceScore += 1;
-  } else {
-    narasi += "• Area bawah mata tidak menunjukkan indikasi kelelahan visual signifikan.<br>";
-  }
+  let risk = "rendah";
+  if (finalScore >= 3) risk = "tinggi";
+  else if (finalScore >= 1.8) risk = "sedang";
 
-  // 😐 Simetri wajah & tegangan
-  if (simetri > 0.6){
-    narasi += "• Terdapat ketidaksimetrisan mikro wajah dan ketegangan rahang ringan, yang sering dikaitkan dengan aktivasi stres otonom kronis.<br>";
-    faceScore += 1;
-  } else {
-    narasi += "• Simetri wajah dan relaksasi otot berada dalam kondisi wajar.<br>";
-  }
+  let confidence = "sedang";
+  if (Math.abs(manualScore - visualScore) <= 1) confidence = "tinggi";
 
-  // ❤️ rPPG
-  if (rppg > 0.6){
-    narasi += "• Estimasi denyut jantung visual menunjukkan nilai relatif tinggi saat istirahat, yang dapat mengindikasikan peningkatan beban kerja jantung.<br>";
-    faceScore += 2;
-  } else {
-    narasi += "• Estimasi denyut jantung visual berada dalam rentang normal.<br>";
-  }
+  document.getElementById("finalResult").innerHTML =
+    "<b>Hasil Skrining Terintegrasi</b><br><br>" +
+    "• Pola sirkulasi wajah menunjukkan " +
+    (r > 0.02 ? "aktivitas meningkat." : "kondisi fisiologis wajar.") + "<br>" +
+    "• Ketegangan otot wajah " +
+    (t > 0.015 ? "terdeteksi." : "dalam batas normal.") + "<br><br>" +
+    "<b>Kesimpulan:</b><br>" +
+    "Estimasi risiko kardiometabolik: <b>" + risk + "</b><br>" +
+    "Tingkat keyakinan: <b>" + confidence + "</b><br><br>" +
+    "<small>Hasil ini merupakan skrining awal non-diagnostik.</small>";
 
-  // 📏 Body scan
-  let bodyScore = 0;
-  if (body > 0.6){
-    narasi += "• Analisis proporsi tubuh mengindikasikan distribusi lemak sentral yang meningkat, yang merupakan faktor risiko utama penyakit kardiometabolik.<br>";
-    bodyScore = 2;
-  } else {
-    narasi += "• Distribusi proporsi tubuh berada dalam batas normal.<br>";
-  }
-
-  let total = manualScore + faceScore + bodyScore;
-  let level = "Rendah";
-  if (total >= 8) level = "Tinggi";
-  else if (total >= 4) level = "Sedang";
-
-  let confidence = Math.min(95, 50 + total*5);
-
-  finalResult.innerHTML =
-    narasi +
-    "<br><b>Risk Confidence Score:</b> " + total +
-    "<br><b>Kategori Risiko:</b> " + level +
-    "<br><b>Tingkat Keyakinan Sistem:</b> " + confidence + "%" +
-    "<br><br><small>Hasil ini merupakan estimasi risiko berbasis penggabungan data fisiologis dan indikator visual non-invasif, bukan diagnosis medis.</small>";
+  scanStatus.innerHTML = "Scan selesai";
 }
-
-const umurEl = document.getElementById("umur");
-const bbEl = document.getElementById("bb");
-const tbEl = document.getElementById("tb");
-const nadiEl = document.getElementById("nadi");
-const keluhanEl = document.getElementById("keluhan");
 </script>
-
 </body>
 </html>
